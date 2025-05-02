@@ -33,7 +33,23 @@
  */
 const MusicPlayer = require("./MusicPlayer")
 const discordjs = require("discord.js");
-const client = new discordjs.Client();
+const client = new discordjs.Client({
+    intents: [
+        "MessageContent",
+        "Guilds",
+        "GuildMessages",
+        "GuildMessageReactions",
+        "GuildMembers",
+        "GuildVoiceStates"
+    ],
+    partials: [
+        discordjs.Partials.Channel,
+        discordjs.Partials.GuildMember,
+        discordjs.Partials.Message,
+        discordjs.Partials.Reaction,
+        discordjs.Partials.User
+    ]
+});
 const token = "bot token here";
 const prefix = "bot prefix here";
 
