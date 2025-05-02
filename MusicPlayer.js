@@ -41,6 +41,7 @@ module.exports = class MusicPlayer {
         youtubeApiKey = "AIzaSyB6UmpHiTCnn2v6848oxr_5vMEcdJWwkNo",
         initialVolume = 0.5
     ) {
+        this.channel = channel;
         this.metadata = metadataChannel;
         this.player = createAudioPlayer();
         this.volume = initialVolume;

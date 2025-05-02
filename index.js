@@ -100,69 +100,69 @@ client.on("messageCreate", async (message) => {
             break;
 
         case "play":
-            {
-                const players = client.players;
-                if (!message.member?.voice.channel)
-                    return await message.reply("ابتدا در ویس عضو شوید.");
+            const players = client.players;
+            if (!message.member?.voice.channel)
+                return await message.reply("please join to a voice channel");
 
-                const query = args && args.join(" ");
-                if (!query) return await message.reply("یک عبارت یا لینک وارد کنید.");
+            const query = args && args.join(" ");
+            if (!query) return await message.reply("please write a music name or youtube link.");
 
-                try {
-                    let player = players.get(message.guild.id);
-                    if (!player) {
-                        player = new MusicPlayer(
-                            message.member.voice.channel,
-                            message.channel
-                        );
-                        players.set(message.guild.id, player);
-                    }
-
-                    const playMessage = await player.play(query);
-                    if (!playMessage) return;
-
-                    const controls = new Map([
-                        ["⏭️", async () => player.skip()],
-                        ["⏮️", async () => player.previous()],
-                        ["🔀", async () => { player.shuffle(); await message.channel.send("🔀 صف شافل شد."); }],
-                        ["🔁", async () => { player.toggleLoopQueue(); await message.channel.send(player.isLoopQueue() ? "🔁 تکرار صف فعال شد." : "▶️ تکرار صف غیرفعال شد."); }],
-                        ["🔂", async () => { player.toggleLoopTrack(); await message.channel.send(player.isLoopTrack() ? "🔂 تکرار ترک جاری فعال شد." : "▶️ تکرار ترک جاری غیرفعال شد."); }],
-                        ["⏸️", async () => player.pause()],
-                        ["▶️", async () => player.resume()],
-                        ["🔉", async () => player.setVolume(player.getVolume() - 0.1)],
-                        ["🔊", async () => player.setVolume(player.getVolume() + 0.1)],
-                        ["⏹️", async () => { player.stop(); collector.stop(); }],
-                        ["❌", async () => { player.stop(true); collector.stop(); }]
-                    ]);
-
-                    for (const emoji of controls.keys())
-                        await playMessage.react(emoji);
-
-                    const filter = (r, u) =>
-                        controls.has(r.emoji.name) && u.id === message.author.id;
-
-                    const collector = playMessage.createReactionCollector({ filter, time: 5 * 60_000 });
-
-                    collector.on("collect", async (reaction, user) => {
-                        try {
-                            await reaction.users.remove(user.id);
-                            const action = controls.get(reaction.emoji.name);
-                            if (action)
-                                await action();
-
-                        } catch (err) {
-                            console.error(err);
-                        }
-                    });
-
-                    collector.on("end", () => {
-                        playMessage.reactions.removeAll().catch(() => null);
-                    });
-
-                } catch (e) {
-                    await message.reply(`❌ error: ${e.message}`);
+            try {
+                let player = players.get(message.guild.id);
+                if (!player) {
+                    player = new MusicPlayer(
+                        message.member.voice.channel,
+                        message.channel
+                    );
+                    players.set(message.guild.id, player);
                 }
+
+                const playMessage = await player.play(query);
+                if (!playMessage) return;
+
+                const controls = new Map([
+                    ["⏭️", async () => player.skip()],
+                    ["⏮️", async () => player.previous()],
+                    ["🔀", async () => { player.shuffle(); await message.channel.send("🔀 queue is shuffled"); }],
+                    ["🔁", async () => { player.toggleLoopQueue(); await message.channel.send(player.isLoopQueue() ? "🔁 queue repeat is on." : "▶️ queue repeat is off."); }],
+                    ["🔂", async () => { player.toggleLoopTrack(); await message.channel.send(player.isLoopTrack() ? "🔂 track repeat is on." : "▶️ track repeat is off."); }],
+                    ["⏸️", async () => player.pause()],
+                    ["▶️", async () => player.resume()],
+                    ["🔉", async () => player.setVolume(player.getVolume() - 0.1)],
+                    ["🔊", async () => player.setVolume(player.getVolume() + 0.1)],
+                    ["⏹️", async () => { player.stop(); collector.stop(); }],
+                    ["❌", async () => { player.stop(true); collector.stop(); }]
+                ]);
+
+                for (const emoji of controls.keys())
+                    await playMessage.react(emoji);
+
+                const filter = (r, u) =>
+                    controls.has(r.emoji.name) && u.id === message.author.id;
+
+                const collector = playMessage.createReactionCollector({ filter, time: 5 * 60_000 });
+
+                collector.on("collect", async (reaction, user) => {
+                    try {
+                        await reaction.users.remove(user.id);
+                        const action = controls.get(reaction.emoji.name);
+                        if (action)
+                            await action();
+
+                    } catch (err) {
+                        console.error(err);
+                    }
+                });
+
+                collector.on("end", () => {
+                    playMessage.reactions.removeAll().catch(() => null);
+                });
+
+            } catch (e) {
+                console.error(e);
+                await message.reply(`❌ error: ${e.message}`);
             }
+
             break;
 
         default:
