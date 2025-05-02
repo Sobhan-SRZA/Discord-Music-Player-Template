@@ -12,32 +12,18 @@ const youtubedl = require("youtube-dl-exec");
 const ytdl_core = require("ytdl-core");
 const ytdl = require("@distube/ytdl-core");
 
-// export class MusicPlayer {
 module.exports = class MusicPlayer {
-    // private connection: VoiceConnection | null = null;
-    // private player: AudioPlayer;
-    // private volume: number;
-    // private metadata: TextChannel;
-    // private yt: YouTubeService;
-    // private queue: string[] = [];
-    // private history: string[] = [];
-    // private loopQueue = false;
-    // private loopTrack = false;
-    // private playing = false;
 
     /**
      * 
-     * @param {import("discord.js").VoiceChannel} channel 
+     * @param {import("discord.js").VoiceBasedChannel} channel 
      * @param {import("discord.js").TextChannel} metadataChannel 
      * @param {string} [youtubeApiKey="AIzaSyB6UmpHiTCnn2v6848oxr_5vMEcdJWwkNo"] 
      * @param {number} [initialVolume=0.5] 
      */
     constructor(
-        // private channel: VoiceChannel,
         channel,
-        // metadataChannel: TextChannel,
         metadataChannel,
-        // youtubeApiKey: string = "AIzaSyB6UmpHiTCnn2v6848oxr_5vMEcdJWwkNo",
         youtubeApiKey = "AIzaSyB6UmpHiTCnn2v6848oxr_5vMEcdJWwkNo",
         initialVolume = 0.5
     ) {
@@ -47,21 +33,28 @@ module.exports = class MusicPlayer {
         this.volume = initialVolume;
         this.yt = new YouTubeService(youtubeApiKey);
 
-        // this.player.on(AudioPlayerStatus.Idle, () => this.onIdle());
+        this.connection = null;
+        this.queue = [];
+        this.history = [];
+        this.loopQueue = false;
+        this.loopTrack = false;
+        this.playing = false;
+        this.playCollector = null;
+
         this.player.on(AudioPlayerStatus.Idle, () => this.#onIdle());
         this.player.on("error", err => {
             console.error("Player error:", err);
+            this.playCollector.stop();
             this.metadata.send(`❌ error while playing: ${err.message}`);
         });
 
     }
 
-    // private async ensureConnection() {
     async #ensureConnection() {
         if (!this.connection) {
             this.connection = joinVoiceChannel({
                 channelId: this.channel.id,
-                guildId: this.channel.guild.id,
+                guildId: this.channel.guildId,
                 adapterCreator: this.channel.guild.voiceAdapterCreator
             });
             try {
@@ -79,7 +72,6 @@ module.exports = class MusicPlayer {
         }
     }
 
-    // public async search(query: string): Promise<string> {
     /**
      * 
      * @param {string} query 
@@ -91,14 +83,12 @@ module.exports = class MusicPlayer {
         return await this.yt.searchFirstVideoURL(query);
     }
 
-    // public async createStreamFromYtdl(url: string) {
     /**
      * 
      * @param {string} url 
      * @returns {Promise<import("stream").PassThrough>}
      */
     async createStreamFromYtdl(url) {
-        // const options: any = { filter: "audioonly", highWaterMark: 1 << 25 };
         const options = { filter: "audioonly", highWaterMark: 1 << 25 };
         try {
             return await ytdl(url, options);
@@ -111,7 +101,6 @@ module.exports = class MusicPlayer {
         }
     }
 
-    // private async createStreamFromYtDlExec(url: string): Promise<PassThrough> {
     /**
     * 
     * @param {string} url 
@@ -120,15 +109,13 @@ module.exports = class MusicPlayer {
     async createStreamFromYtDlExec(url) {
         const ytdlProcess = await youtubedl(url);
 
-        // return ytdlProcess as unknown as PassThrough;
         return ytdlProcess;
     }
 
-    // private async playUrl(url: string) {
     /**
      * 
      * @param {string} url 
-     * @returns {void}
+     * @returns {Promise<void>}
      */
     async #playUrl(url) {
         this.playing = true;
@@ -140,17 +127,55 @@ module.exports = class MusicPlayer {
         const resource = createAudioResource(stream, { inlineVolume: true });
         resource.volume?.setVolume(this.volume);
         this.player.play(resource);
-        return this.metadata.send(`▶️ playing: ${url}`);
+        this.player.resource = resource;
+        const playMessage = await this.metadata.send(`▶️ playing: ${url}`);
+        const controls = new Map([
+            ["⏭️", async () => this.skip()],
+            ["⏮️", async () => this.previous()],
+            ["🔀", async () => { this.shuffle(); await this.metadata.send("🔀 queue is shuffled"); }],
+            ["🔁", async () => { this.toggleLoopQueue(); await this.metadata.send(this.isLoopQueue() ? "🔁 queue repeat is on." : "▶️ queue repeat is off."); }],
+            ["🔂", async () => { this.toggleLoopTrack(); await this.metadata.send(this.isLoopTrack() ? "🔂 track repeat is on." : "▶️ track repeat is off."); }],
+            ["⏸️", async () => this.pause()],
+            ["▶️", async () => this.resume()],
+            ["🔉", async () => this.setVolume(this.getVolume() - 10)],
+            ["🔊", async () => this.setVolume(this.getVolume() + 10)],
+            ["⏹️", async () => { this.stop(); collector.stop(); }],
+            ["❌", async () => { this.stop(true); collector.stop(); }]
+        ]);
+
+        for (const emoji of controls.keys())
+            await playMessage.react(emoji);
+
+        const filter = (r, u) =>
+            controls.has(r.emoji.name);
+
+        const collector = playMessage.createReactionCollector({ filter, time: 5 * 60_000 });
+
+        collector.on("collect", async (reaction, user) => {
+            try {
+                await reaction.users.remove(user.id);
+                const action = controls.get(reaction.emoji.name);
+                if (action)
+                    await action();
+
+            } catch (err) {
+                console.error(err);
+            }
+        });
+
+        collector.on("end", () => {
+            playMessage.reactions.removeAll().catch(() => null);
+        });
+        this.playCollector = collector;
+        return
     }
 
-    // public async play(input: string) {
     /**
      * 
      * @param {string} input 
-     * @returns {void}
+     * @returns {Promise<void>}
      */
     async play(input) {
-        // await this.ensureConnection();
         await this.#ensureConnection();
         const url = await this.search(input);
 
@@ -161,12 +186,10 @@ module.exports = class MusicPlayer {
         }
 
         else
-            // return await this.playUrl(url);
             return await this.#playUrl(url);
 
     }
 
-    // public pause() {
     /**
      * @returns {void}
      */
@@ -175,7 +198,6 @@ module.exports = class MusicPlayer {
         this.metadata.send("⏸️ player is paused.");
     }
 
-    // public resume() {
     /**
      * @returns {void}
      */
@@ -184,7 +206,6 @@ module.exports = class MusicPlayer {
         this.metadata.send("▶️ player is resume.");
     }
 
-    // public setVolume(percent: number) {
     /**
      * @param {number} percent 
      * @returns {void}
@@ -197,7 +218,6 @@ module.exports = class MusicPlayer {
         else
             this.volume = percent;
 
-        // const resource = (this.player.state as AudioPlayerPlayingState).resource;
         const resource = this.player.state?.resource;
         try {
             resource.volume?.setVolume(this.volume);
@@ -206,19 +226,20 @@ module.exports = class MusicPlayer {
         this.metadata.send(`🔊 player volume changed to \`${Math.round(this.volume * 100)}٪\``);
     }
 
-    // private async onIdle() {
     /**
-     * @returns {void}
+     * @returns {Promise<void>}
      */
     async #onIdle() {
+        this.playCollector.stop();
         if (this.loopTrack) {
-            return this.playUrl(this.history[this.history.length - 1]);
+            return this.#playUrl(this.history[this.history.length - 1]);
         }
 
         if (this.queue.length) {
             const next = this.queue.shift();
             if (this.loopQueue) this.queue.push(next);
-            return this.playUrl(next);
+            await this.#playUrl(next);
+            return;
         }
 
         this.playing = false;
@@ -226,15 +247,14 @@ module.exports = class MusicPlayer {
         return undefined;
     }
 
-    // public skip() {
     /**
      * @returns {void}
      */
     skip() {
+        this.playCollector.stop();
         this.player.stop();
     }
 
-    // public previous() {
     /**
     * @returns {void}
     */
@@ -244,13 +264,12 @@ module.exports = class MusicPlayer {
             return;
         }
 
+        this.playCollector.stop();
         this.queue.unshift(this.history.pop());
         const prev = this.history.pop();
-        // this.playUrl(prev);
         this.#playUrl(prev);
     }
 
-    // public shuffle() {
     /**
      * @returns {void}
      */
@@ -261,14 +280,12 @@ module.exports = class MusicPlayer {
         }
     }
 
-    // public toggleLoopQueue() {
     /**
      * @returns {void}
      */
     toggleLoopQueue() {
         this.loopQueue = !this.loopQueue;
     }
-    // public isLoopQueue() {
     /**
      * @returns {void}
      */
@@ -276,14 +293,12 @@ module.exports = class MusicPlayer {
         return this.loopQueue;
     }
 
-    // public toggleLoopTrack() {
     /**
      * @returns {void}
      */
     toggleLoopTrack() {
         this.loopTrack = !this.loopTrack;
     }
-    // public isLoopTrack() {
     /**
      * @returns {void}
      */
@@ -291,7 +306,6 @@ module.exports = class MusicPlayer {
         return this.loopTrack;
     }
 
-    // public stop(noLeave = true) {
     /**
      * @param {boolean} [noLeave=true] 
      * @returns {void}
@@ -307,7 +321,6 @@ module.exports = class MusicPlayer {
         }
     }
 
-    // public getQueue() {
     /**
      * @returns {string[]}
      */
@@ -315,21 +328,19 @@ module.exports = class MusicPlayer {
         return [...this.queue];
     }
 
-    // public getVolume() {
     /**
      * @returns {number}
      */
     getVolume() {
-        // const resource = (this.player.state as AudioPlayerPlayingState).resource;
         const resource = this.player.state?.resource;
         if (resource && resource.volume && resource.volume.volume)
             return Math.round(
-                Math.min(
-                    Math.max(resource.volume.volume, 0), 1
-                ) * 100
+                resource.volume.volume * 100
             );
 
-        return Math.round(this.volume * 100);
+        return Math.round(
+            this.volume * 100
+        );
     }
 }
 /**

@@ -1,14 +1,11 @@
 const { google } = require("googleapis");
 
-// export class YouTubeService {
 module.exports = class YouTubeService {
-    // private youtube: youtube_v3.Youtube;
 
     /**
      * 
      * @param {string} apiKey 
      */
-    // constructor(apiKey: string) {
     constructor(apiKey) {
         this.youtube = google.youtube({
             version: "v3",
@@ -16,7 +13,6 @@ module.exports = class YouTubeService {
         });
     }
 
-    // async searchFirstVideoURL(query: string): Promise<string> {
     /**
      * 
      * @param {string} query 
