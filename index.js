@@ -31,7 +31,7 @@
   OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-const MusicPlayer = require("./MusicPlayer")
+const { MusicPlayer } = require("@persian-caesar/discord-player");
 const discordjs = require("discord.js");
 const client = new discordjs.Client({
     intents: [
@@ -112,13 +112,15 @@ client.on("messageCreate", async (message) => {
                     let player = players.get(message.guild.id);
                     if (!player) {
                         player = new MusicPlayer(
-                            message.member.voice.channel,
                             message.channel
                         );
                         players.set(message.guild.id, player);
                     }
 
                     await player.play(query);
+                    player.on("start", async ({ url }) => {
+                        await message.reply(`start to play track: ${url}`)
+                    });
                     return;
                 } catch (e) {
                     console.error(e);
