@@ -31,6 +31,7 @@
   OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+require("dotenv").config();
 const { MusicPlayer } = require("@persian-caesar/discord-player");
 const discordjs = require("discord.js");
 const client = new discordjs.Client({
@@ -50,8 +51,8 @@ const client = new discordjs.Client({
         discordjs.Partials.User
     ]
 });
-const token = "bot token here";
-const prefix = "bot prefix here";
+const token = process.env.token || "bot token here";
+const prefix = process.env.prefix || "bot prefix here";
 
 // add player map to client
 client.players = new Map(); // Map<string, MusicPlayer>
@@ -82,15 +83,12 @@ client.on("messageCreate", async (message) => {
     if (message.content.toLowerCase().indexOf(bot_prefix) !== 0)
         return;
 
-    const args = message.content.slice(prefix.length).trim().split(/ +/g);
-    const commandName = args.shift().toLowerCase();
-    if (!commandName) {
-        if (bot_prefix.startsWith("<@")) {
-            return await message.reply({
-                content: `bot prefix is: \`${stringPrefix}\`\``,
-            });
-        }
-        return;
+    const args = message.content.slice(bot_prefix.length).trim().split(/ +/g);
+    const commandName = args[0].toLowerCase();
+    if (!commandName && bot_prefix.startsWith("<@")) {
+        return await message.reply({
+            content: `bot prefix is: \`${stringPrefix}\``,
+        });
     }
 
     else
@@ -130,7 +128,7 @@ client.on("messageCreate", async (message) => {
                 break;
 
             default:
-                await message.reply("wrong command")
+                await message.reply("wrong command");
                 break;
         }
 })
