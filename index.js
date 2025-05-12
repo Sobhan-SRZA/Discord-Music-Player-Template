@@ -31,119 +31,200 @@
   OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+const {
+    Client,
+    GatewayIntentBits,
+    Partials,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    ChannelType,
+    ComponentType,
+    MessageFlags,
+} = require("discord.js");
+const {
+    MusicPlayer,
+    MusicPlayerEvent
+} = require("@persian-caesar/discord-player");
 require("dotenv").config();
-const { MusicPlayer } = require("@persian-caesar/discord-player");
-const discordjs = require("discord.js");
-const client = new discordjs.Client({
+
+const client = new Client({
     intents: [
-        "MessageContent",
-        "Guilds",
-        "GuildMessages",
-        "GuildMessageReactions",
-        "GuildMembers",
-        "GuildVoiceStates"
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.GuildVoiceStates,
+        GatewayIntentBits.MessageContent
     ],
     partials: [
-        discordjs.Partials.Channel,
-        discordjs.Partials.GuildMember,
-        discordjs.Partials.Message,
-        discordjs.Partials.Reaction,
-        discordjs.Partials.User
+        Partials.Channel,
+        Partials.GuildMember,
+        Partials.Message,
+        Partials.Reaction,
+        Partials.User
     ]
 });
+
 const token = process.env.token || "bot token here";
 const prefix = process.env.prefix || "bot prefix here";
 
-// add player map to client
-client.players = new Map(); // Map<string, MusicPlayer>
+// Store per-guild state: { player, controlMessage, collector }
+client.playerStates = new Map();
 
-// message comamnd
+/**
+ * @param {MusicPlayer} player
+ * @returns {import("discord.js").ActionRowBuilder<any>[]} 
+ */
+function buildControlRows(player) {
+    const row1 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("vol_down").setEmoji("🔉").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("previous").setEmoji("⏮️").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("play_pause").setEmoji("⏯️").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("skip").setEmoji("⏭️").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("vol_up").setEmoji("🔊").setStyle(ButtonStyle.Secondary)
+    );
+    const loopEmoji = player.isLoopQueue() ? "🔁" : player.isLoopTrack() ? "🔂" : "🚫";
+    const row2 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("shuffle").setEmoji("🔀").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("stop").setEmoji("⏹️").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId("leave").setEmoji("❌").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("loop_queue_track").setEmoji(loopEmoji).setStyle(ButtonStyle.Secondary)
+    );
+    return [row1, row2];
+}
+
 client.on("messageCreate", async (message) => {
-    // Filter dm channels
-    if (message.channel.type === discordjs.ChannelType.DM) return;
+    if (message.author.bot || message.channel.type === ChannelType.DM) return;
+    if (!message.content.startsWith(prefix)) return;
 
-    // Filter webhooks
-    if (!message || message?.webhookId) return;
+    const [cmd, ...args] = message.content.slice(prefix.length).trim().split(/ +/g);
+    if (cmd.toLowerCase() !== "play") return;
 
-    // Filter the bots
-    if (message.author?.bot) return;
+    const query = args.join(" ");
+    if (!query) return message.reply("Please provide a track or URL.");
 
-    // Command Prefix & args
-    const
-        stringPrefix = prefix,
-        prefixRegex = new RegExp(
-            `^(<@!?${client.user.id}>|${stringPrefix.toString().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})\\s*`
-        );
+    const voiceChannel = message.member?.voice.channel;
+    if (!voiceChannel) return message.reply("Join a voice channel first.");
 
-    // Send prefix to channel
-    if (!prefixRegex.test(message.content.toLowerCase()))
-        return;
+    const guildId = message.guild.id;
+    let state = client.playerStates.get(guildId);
 
-    const [bot_prefix] = message.content.toLowerCase().match(prefixRegex);
-    if (message.content.toLowerCase().indexOf(bot_prefix) !== 0)
-        return;
+    if (!state) {
+        const player = new MusicPlayer(voiceChannel, 100, { autoLeaveOnEmptyQueue: false, autoLeaveOnIdleMs: 300_000 });
+        state = { player, controlMessage: null, collector: null };
+        client.playerStates.set(guildId, state);
 
-    const args = message.content.slice(bot_prefix.length).trim().split(/ +/g);
-    const commandName = args[0].toLowerCase();
-    if (!commandName && bot_prefix.startsWith("<@")) {
-        return await message.reply({
-            content: `bot prefix is: \`${stringPrefix}\``,
+        const cleanup = async () => {
+            state.collector?.stop();
+            if (state.controlMessage) await state.controlMessage.edit({ components: [] }).catch(() => { });
+            client.playerStates.delete(guildId);
+        };
+
+        player.on(MusicPlayerEvent.Stop, cleanup);
+        player.on(MusicPlayerEvent.Finish, cleanup);
+        player.on(MusicPlayerEvent.Disconnect, cleanup);
+        player.on(MusicPlayerEvent.Error, cleanup);
+
+        state.player = player;
+    }
+
+    const { player } = state;
+
+    // Remove duplicate listener registration
+    if (!player.listenerCount(MusicPlayerEvent.QueueAdd)) {
+        player.on(MusicPlayerEvent.QueueAdd, async ({ url, queue }) => {
+            await message.reply({ content: `🎶 Added to queue: **${url}** (Queue length: ${queue.length})` });
         });
     }
 
-    else
-        // Command Handler
-        switch (commandName) {
-            case "help":
-                await message.reply(`\`${prefix}play\``);
-                break;
+    const searched = await player.search(query);
+    await player.play(searched);
 
-            case "play":
-                const players = client.players;
-                if (!message.member?.voice.channel)
-                    return await message.reply("please join to a voice channel");
+    const updateControl = async () => {
+        const desc = `🎶 Now playing: **${searched}**` +
+            `\n📃 Queue: ${player.getQueue().length} tracks | 🔊 Volume: ${player.getVolume()}%`;
 
-                const query = args && args.join(" ");
-                if (!query) return await message.reply("please write a music name or youtube link.");
+        if (!state.controlMessage) {
+            const control = await message.reply({ content: desc, components: buildControlRows(player) });
+            state.controlMessage = control;
+            state.collector = control.createMessageComponentCollector({ componentType: ComponentType.Button, time: 300_000 });
 
-                try {
-                    let player = players.get(message.guild.id);
-                    if (!player) {
-                        player = new MusicPlayer(
-                            message.channel
-                        );
-                        players.set(message.guild.id, player);
-                    }
+            state.collector.on("collect", async (i) => {
+                if (!i.isButton()) return;
+                const id = i.customId;
+                switch (id) {
+                    case "play_pause":
+                        if (player.isPaused()) player.resume(); else player.pause();
+                        await i.reply({ content: player.isPaused() ? "⏸️ Paused" : "▶️ Resumed", flags: MessageFlags.Ephemeral });
+                        break;
 
-                    await player.play(query);
-                    player.on("start", async ({ url }) => {
-                        await message.reply(`start to play track: ${url}`)
-                    });
-                    return;
-                } catch (e) {
-                    console.error(e);
-                    await message.reply(`❌ error: ${e.message}`);
+                    case "skip":
+                        player.skip();
+                        await i.reply({ content: "⏭️ Skipped", flags: MessageFlags.Ephemeral });
+                        break;
+
+                    case "previous":
+                        player.previous();
+                        await i.reply({ content: "⏮️ Previous", flags: MessageFlags.Ephemeral });
+                        break;
+
+                    case "stop":
+                        player.stop();
+                        await i.reply({ content: "⏹️ Stopped", flags: MessageFlags.Ephemeral });
+                        break;
+
+                    case "leave":
+                        player.stop(false);
+                        await i.reply({ content: "❌ Left voice channel", flags: MessageFlags.Ephemeral });
+                        break;
+
+                    case "shuffle":
+                        player.shuffle();
+                        await i.reply({ content: "🔀 Shuffled", flags: MessageFlags.Ephemeral });
+                        break;
+
+                    case "loop_queue_track":
+                        player.toggleLoopQueue();
+                        if (player.isLoopQueue()) {
+                            player.toggleLoopQueue();
+                            player.toggleLoopTrack();
+                        }
+
+
+                        await i.reply({ content: `${player.isLoopQueue() ? "🔁 Loop Queue" : player.isLoopTrack() ? "🔂 Loop Track" : "🚫 No loop"}`, flags: MessageFlags.Ephemeral });
+                        break;
+
+                    case "vol_down":
+                        player.setVolume(player.getVolume() - 10);
+                        await i.reply({ content: `🔉 Volume: ${player.getVolume()}%`, flags: MessageFlags.Ephemeral });
+                        break;
+
+                    case "vol_up":
+                        player.setVolume(player.getVolume() + 10);
+                        await i.reply({ content: `🔊 Volume: ${player.getVolume()}%`, flags: MessageFlags.Ephemeral });
+                        break;
                 }
+                await state.controlMessage.edit({ content: desc, components: buildControlRows(player) });
+            });
 
-                break;
-
-            default:
-                await message.reply("wrong command");
-                break;
+            return;
         }
-})
 
-// login to discord
-client.login(token)
-    .then(() => {
-        console.log(`successfully connected to ${client.user.tag}`);
-    });
+        else {
+            await state.controlMessage.edit({ content: desc, components: buildControlRows(player) });
+            return;
+        }
+    };
 
-// anti crash
-process.on("unhandledRejection", (e) => console.error(e));
-process.on("rejectionHandled", (e) => console.error(e));
-process.on("uncaughtException", (e) => console.error(e));
-process.on("uncaughtExceptionMonitor", (e) => console.error(e));
+    await updateControl();
+});
+
+client.on("ready", () => console.log(`Logged in as ${client.user.tag}`));
+client.login(token).catch(console.error);
+
+// Global error handling
+process.on("unhandledRejection", console.error);
+process.on("uncaughtException", console.error);
+process.on("uncaughtExceptionMonitor", console.error);
 /**
  * @copyright
  * Code by Sobhan-SRZA (mr.sinre) | https://github.com/Sobhan-SRZA
