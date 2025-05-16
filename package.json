@@ -1,7 +1,7 @@
 {
   "name": "discord-music-player-template",
   "version": "1.0.0",
-  "description": "This project is a template for discord bots to help them play music in voice channel. (alert: this template only support youtube!))",
+  "description": "This project is a template for discord bots to help them play music in voice channel. (alert: this template only support youtube!)",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
