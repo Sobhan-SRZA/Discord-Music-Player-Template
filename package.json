@@ -10,8 +10,8 @@
   "author": "Sobhan-SRZA (mr.sinre) & Persian Caesar",
   "license": "BSD-3-Clause",
   "dependencies": {
-    "@persian-caesar/discord-player": "^1.0.7",
-    "discord.js": "^14.19.2",
+    "@persian-caesar/discord-player": "^1.1.8",
+    "discord.js": "^14.22.1",
     "dotenv": "^16.5.0"
   }
 }
