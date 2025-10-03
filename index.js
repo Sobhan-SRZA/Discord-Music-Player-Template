@@ -241,7 +241,7 @@ client.on("messageCreate", async (message) => {
             state.collector?.stop();
             if (state.controlMessage)
                 await state.controlMessage
-                    .edit({ components: [] })
+                    .edit({ components: buildControlRows() })
                     .catch(() => { }); // ignore errors on edit (message might be deleted)
 
             client.playerStates.delete(guildId);
@@ -268,8 +268,12 @@ client.on("messageCreate", async (message) => {
     }
 
     // Search & play the requested query. The player's search method returns results.
-    const searched = (await player.search(query))[0];
-    await player.play(searched.url);
+    if (player.isPlaylist(query))
+        searched = (await player.searchPlaylists(query));
+    else
+        searched = (await player.search(query))[0];
+
+    await player.play(searched);
 
     // -------------------------------------------------------------------------
     // Control UI updater — creates or updates the `controlMessage` with buttons.
@@ -301,13 +305,13 @@ client.on("messageCreate", async (message) => {
             state.controlMessage = control;
 
             // Collector listens only to button interactions for the lifetime of the track
-            const collector = control.createMessageComponentCollector({
+            state.collector = control.createMessageComponentCollector({
                 componentType: ComponentType.Button,
-                time: metadata.duration * 1000
+                time: (metadata.duration + 60 * 5) * 1000
             });
 
             // Button collector: central switch handler for all button actions
-            collector.on("collect", async (i) => {
+            state.collector.on("collect", async (i) => {
                 if (!i.isButton())
                     return;
 
@@ -445,14 +449,6 @@ client.on("messageCreate", async (message) => {
                     components: buildControlRows(player)
                 });
             });
-
-            // Stop the buttons
-            collector.on("end", async () => {
-                await state.controlMessage.edit({
-                    content: (await desc()) + "\n❌ Stopped by finishing the track.",
-                    components: buildControlRows()
-                });
-            })
 
             return;
         }
