@@ -77,11 +77,6 @@ const client = new Client({
 // Lavalink is the audio backend. The manager bridges the bot and Lavalink nodes.
 // The `send` function describes how to send payloads to the proper shard.
 const manager = new LavalinkManager(client, {
-    send(id, payload) {
-        const guild = client.guilds.cache.get(id);
-        if (guild) guild.shard.send(payload);
-    },
-
     // Replace this with your Lavalink node config (host, port, password, secure)
     nodes: require("./freeLavalinkNodes.json") || [
         {
@@ -260,20 +255,31 @@ client.on("messageCreate", async (message) => {
 
     // Register queue-add listener only once to avoid duplicate messages
     if (!player.listenerCount(MusicPlayerEvent.QueueAdd)) {
-        player.on(MusicPlayerEvent.QueueAdd, async ({ metadata, queue }) => {
-            await message.reply({
-                content: `🎶 Added to queue: [**${metadata.title}**](${metadata.url}) (Queue length: ${queue.length})`
-            });
+        player.on(MusicPlayerEvent.QueueAdd, async ({ metadata, metadatas, queue }) => {
+            if (metadatas && metadatas.length > 1) {
+                // Playlist case
+                await message.reply({
+                    content: `🎶 Playlist added: **${metadatas.length} tracks** (Queue length: ${queue.length})`
+                });
+            }
+
+            else if (metadata) {
+                // Single track case
+                await message.reply({
+                    content: `🎶 Added to queue: [**${metadata.title}**](${metadata.url}) (Queue length: ${queue.length})`
+                });
+            }
         });
     }
 
     // Search & play the requested query. The player's search method returns results.
-    if (player.isPlaylist(query))
-        searched = (await player.searchPlaylists(query));
-    else
-        searched = (await player.search(query))[0];
+    if (await player.isPlaylist(query))
+        await player.play(query);
 
-    await player.play(searched);
+    else {
+        searched = (await player.search(query))[0];
+        await player.play(searched);
+    }
 
     // -------------------------------------------------------------------------
     // Control UI updater — creates or updates the `controlMessage` with buttons.
@@ -295,6 +301,146 @@ client.on("messageCreate", async (message) => {
                 `\n📃 Queue: ${live_queue.length} tracks | 🔊 Volume: ${player.getVolume()}%`;
         };
 
+        // Collector listens only to button interactions for the lifetime of the track
+        /**
+         * Attach a fresh collector to `state.controlMessage` for the given metadata.
+         * Stops any existing collector first to avoid duplicates or stale collectors.
+         */
+        const attachCollector = (metadata) => {
+            // Stop previous collector if present
+            if (state.collector) {
+                try { state.collector.stop(); } catch (e) { /* ignore */ }
+                state.collector = null;
+            }
+
+            // Create a new collector lifetime based on the track duration + buffer
+            const timeoutMs = ((metadata?.duration || 0) + 60 * 5) * 1000;
+
+            state.collector = state.controlMessage.createMessageComponentCollector({
+                componentType: ComponentType.Button,
+                time: timeoutMs,
+                // Optionally filter interactions to allow only users in voice-channel or only command author:
+                // filter: (i) => i.user.id === message.author.id
+            });
+
+            // Central collect handler (same logic as before)
+            state.collector.on("collect", async (i) => {
+                if (!i.isButton())
+                    return;
+
+                const id = i.customId;
+
+                try {
+                    switch (id) {
+                        case "play_pause":
+                            if (player.isPaused()) player.resume(); else player.pause();
+                            await i.reply({
+                                content: player.isPaused() ? "⏸️ Paused" : "▶️ Resumed",
+                                flags: MessageFlags.Ephemeral
+                            });
+
+                            break;
+
+                        case "skip":
+                            player.skip();
+                            await i.reply({ content: "⏭️ Skipped", flags: MessageFlags.Ephemeral });
+
+                            break;
+
+                        case "previous":
+                            player.previous();
+                            await i.reply({ content: "⏮️ Previous", flags: MessageFlags.Ephemeral });
+
+                            break;
+
+                        case "stop":
+                            player.stop();
+                            await i.reply({ content: "⏹️ Stopped", flags: MessageFlags.Ephemeral });
+
+                            break;
+
+                        case "leave":
+                            player.stop(false);
+                            await i.reply({ content: "❌ Left voice channel", flags: MessageFlags.Ephemeral });
+
+                            break;
+
+                        case "shuffle":
+                            player.shuffle();
+                            await i.reply({ content: "🔀 Shuffled", flags: MessageFlags.Ephemeral });
+
+                            break;
+
+                        case "loop_queue_track": {
+                            const wasQueue = player.isLoopQueue();
+                            const wasTrack = player.isLoopTrack();
+                            if (!wasQueue && !wasTrack)
+                                player.toggleLoopQueue();
+
+                            else if (wasQueue) {
+                                player.toggleLoopQueue();
+                                if (!player.isLoopTrack())
+                                    player.toggleLoopTrack();
+                            }
+
+                            else if (wasTrack)
+                                player.toggleLoopTrack();
+
+                            await i.reply({
+                                content: player.isLoopQueue() ? "🔁 Loop Queue" : player.isLoopTrack() ? "🔂 Loop Track" : "🚫 No loop",
+                                flags: MessageFlags.Ephemeral
+                            });
+
+                            break;
+                        }
+
+                        case "vol_down":
+                            player.setVolume(Math.max(player.getVolume() - 10, 0));
+                            await i.reply({ content: `🔉 Volume: ${player.getVolume()}%`, flags: MessageFlags.Ephemeral });
+
+                            break;
+
+                        case "vol_up":
+                            player.setVolume(Math.min(player.getVolume() + 10, 200));
+                            await i.reply({ content: `🔊 Volume: ${player.getVolume()}%`, flags: MessageFlags.Ephemeral });
+
+                            break;
+                    }
+                }
+
+                catch (err) {
+                    console.error("Collector action error:", err);
+                    // Try to acknowledge if not acknowledged (avoid UnhandledInteraction)
+                    try { await i.reply({ content: "Error processing action", flags: MessageFlags.Ephemeral }); } catch { }
+                }
+
+                // update UI after action
+                try {
+                    await state.controlMessage.edit({
+                        content: await desc(),
+                        components: buildControlRows(player)
+                    });
+                }
+
+                catch (e) { /* ignore edit errors */ }
+            });
+
+            // When collector ends, clear reference and optionally disable UI buttons
+            state.collector.on("end", async () => {
+                state.collector = null;
+                // Optionally update message to show controls disabled when collector timed out
+                // Use buildControlRows() without player to create disabled rows
+                try {
+                    await state.controlMessage.edit({
+                        content: await desc(),
+                        components: buildControlRows() // disabled controls
+                    });
+                }
+
+                catch (e) { /* ignore */ }
+            });
+        }
+
         // If no control message exists yet, send one and attach a collector
         if (!state.controlMessage) {
             const control = await message.reply({
@@ -304,164 +450,19 @@ client.on("messageCreate", async (message) => {
 
             state.controlMessage = control;
 
-            // Collector listens only to button interactions for the lifetime of the track
-            state.collector = control.createMessageComponentCollector({
-                componentType: ComponentType.Button,
-                time: (metadata.duration + 60 * 5) * 1000
-            });
-
-            // Button collector: central switch handler for all button actions
-            state.collector.on("collect", async (i) => {
-                if (!i.isButton())
-                    return;
-
-                const id = i.customId;
-                switch (id) {
-                    case "play_pause":
-                        if (player.isPaused())
-                            player.resume();
-
-                        else
-                            player.pause();
-
-                        await i.reply({
-                            content:
-                                player.isPaused()
-                                    ? "⏸️ Paused"
-                                    : "▶️ Resumed",
-
-                            flags: MessageFlags.Ephemeral
-                        });
-
-                        break;
-
-                    case "skip":
-                        player.skip();
-                        await i.reply({
-                            content: "⏭️ Skipped",
-                            flags: MessageFlags.Ephemeral
-                        });
-
-                        break;
-
-                    case "previous":
-                        player.previous();
-                        await i.reply({
-                            content: "⏮️ Previous",
-                            flags: MessageFlags.Ephemeral
-                        });
-
-                        break;
-
-                    case "stop":
-                        player.stop();
-
-                        await i.reply({
-                            content: "⏹️ Stopped",
-                            flags: MessageFlags.Ephemeral
-                        });
-
-                        break;
-
-                    case "leave":
-                        // stop(false) may indicate 'stop but do not leave immediately' depending on API
-                        player.stop(false);
-                        await i.reply({
-                            content: "❌ Left voice channel",
-                            flags: MessageFlags.Ephemeral
-                        });
-
-                        break;
-
-                    case "shuffle":
-                        player.shuffle();
-                        await i.reply({
-                            content: "🔀 Shuffled",
-                            flags: MessageFlags.Ephemeral
-                        });
-
-                        break;
-
-                    case "loop_queue_track":
-                        // Robust loop cycling logic:
-                        // none -> queue
-                        // queue -> track
-                        // track -> none
-                        // We read both states first to avoid toggling twice accidentally.
-                        const wasQueue = player.isLoopQueue();
-                        const wasTrack = player.isLoopTrack();
-
-                        if (!wasQueue && !wasTrack) {
-                            // enable queue loop
-                            player.toggleLoopQueue();
-                        }
-
-                        else if (wasQueue) {
-                            // switch queue -> track
-                            player.toggleLoopQueue();      // disable queue loop
-                            if (!player.isLoopTrack()) {   // enable track loop if not already
-                                player.toggleLoopTrack();
-                            }
-                        }
-
-                        else if (wasTrack) {
-                            // switch track -> none
-                            player.toggleLoopTrack();
-                        }
-
-                        await i.reply({
-                            content:
-                                player.isLoopQueue()
-                                    ? "🔁 Loop Queue"
-                                    : player.isLoopTrack()
-                                        ? "🔂 Loop Track"
-                                        : "🚫 No loop",
-
-                            flags: MessageFlags.Ephemeral
-                        });
-
-                        break;
-
-                    case "vol_down":
-                        // clamp or validate in real code if you want min/max bounds
-                        player.setVolume(player.getVolume() - 10);
-                        await i.reply({
-                            content: `🔉 Volume: ${player.getVolume()}%`,
-                            flags: MessageFlags.Ephemeral
-                        });
-
-                        break;
-
-                    case "vol_up":
-                        // clamp volume between 0–200 (example upper bound)
-                        player.setVolume(player.getVolume() + 10);
-                        await i.reply({
-                            content: `🔊 Volume: ${player.getVolume()}%`,
-                            flags: MessageFlags.Ephemeral
-                        });
-
-                        break;
-                }
-
-                // After acting on the button, refresh the control message UI so it reflects the new state.
-                await state.controlMessage.edit({
-                    content: await desc(),
-                    components: buildControlRows(player)
-                });
-            });
-
-            return;
+            attachCollector(metadata); // attach fresh collector for this metadata
         }
 
-        // If control message already exists, just edit it to update status and buttons
         else {
+            // If control message already exists, edit it...
             await state.controlMessage.edit({
                 content: await desc(),
                 components: buildControlRows(player)
             });
 
-            return;
-        }
+            // Attach a fresh collector for the new track (stop old one if present)
+            attachCollector(metadata);
+        };
     };
 
     // Initial call to create/update the control message
